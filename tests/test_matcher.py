@@ -1,0 +1,285 @@
+"""Unit tests for the matching engine and bid-detection helpers."""
+from thrift_scout.config import Target
+from thrift_scout.matcher import (
+    check_exclusions, match_brand, match_item, match_size, match_username, norm_title,
+)
+
+# ── Brand ──
+
+def test_brand_exact():
+    assert match_brand("Patagonia Better Sweater Fleece", ["Patagonia"]) == "Patagonia"
+
+def test_brand_case_insensitive():
+    assert match_brand("patagonia zip jacket", ["Patagonia"]) == "Patagonia"
+
+def test_brand_alias():
+    assert match_brand("Doc Martens 1460 Boot Sz 11", ["Dr. Martens", "Doc Martens"]) == "Doc Martens"
+
+def test_brand_miss():
+    assert match_brand("Nike Air Force 1", ["Patagonia"]) is None
+
+# ── Size ──
+
+def test_size_xl():
+    assert match_size("Patagonia Fleece Jacket Mens XL", ["XL", "X-Large"]) is not None
+
+def test_size_alias_expansion():
+    assert match_size("Patagonia Extra Large Fleece", ["XL"]) is not None
+
+def test_size_no_false_positive_in_word():
+    assert match_size("Excellent Condition Jacket", ["L"]) is None
+
+def test_size_shoe_number():
+    assert match_size("Doc Martens 1460 Boot Size 11 Black", ["11"]) is not None
+
+def test_size_shoe_no_false_positive():
+    assert match_size("Nike Air Max 110 Sneaker", ["11"]) is None
+
+def test_size_waist():
+    assert match_size("Lululemon ABC Pant 36 Obsidian", ["36", "W36"]) is not None
+
+def test_size_fractional():
+    assert match_size("Blundstone Chelsea Boot 11.5", ["11.5"]) is not None
+
+def test_size_no_requirement():
+    assert match_size("MoonSwatch Mission to Mars", []) == ""
+
+# ── Exclusions ──
+
+def test_exclusion_hit():
+    assert check_exclusions("Kids Patagonia Fleece XL Youth", ["kids", "youth"]) == "kids"
+
+def test_exclusion_miss():
+    assert check_exclusions("Patagonia Fleece XL Mens", ["kids", "youth"]) is None
+
+def test_exclusion_no_substring_false_positive():
+    """'mens' must not match inside 'womens', 'men's' must not match inside 'women's'."""
+    assert check_exclusions("Vuori Womens Jogger Medium", ["mens"]) is None
+    assert check_exclusions("Vuori Women's Jogger M", ["men's"]) is None
+
+# ── Full match_item ──
+
+_PAT = Target(brand="Patagonia", aliases=["Patagonia"], sizes=["XL", "X-Large", "Extra Large"],
+              gender="mens", exclude=["kids", "youth", "toddler", "girls", "boys", "damaged", "stained"])
+_MW = Target(brand="Omega x Swatch", aliases=["Omega x Swatch", "Omega Swatch", "MoonSwatch", "Moon Swatch"],
+             sizes=[], match_mode="keyword_pair", exclude=["strap only", "band only", "box only", "replica", "fake"])
+
+def test_match_patagonia():
+    r = match_item({"title": "Patagonia Better Sweater Fleece Jacket Mens XL Blue", "itemId": 1}, _PAT)
+    assert r and r["brand_matched"] == "Patagonia" and r["match_mode"] == "brand_size"
+
+def test_match_excludes_kids():
+    assert match_item({"title": "Patagonia Kids Fleece XL Youth", "itemId": 2}, _PAT) is None
+
+def test_match_wrong_size():
+    assert match_item({"title": "Patagonia Better Sweater Fleece Mens Small", "itemId": 3}, _PAT) is None
+
+def test_match_keyword_pair():
+    r = match_item({"title": "Omega Swatch MoonSwatch Mission to Mars", "itemId": 4}, _MW)
+    assert r and r["match_mode"] == "keyword_pair"
+
+def test_match_keyword_pair_excluded():
+    assert match_item({"title": "MoonSwatch Strap Only Replacement Band", "itemId": 5}, _MW) is None
+
+def test_match_gender_filter():
+    assert match_item({"title": "Patagonia Women's Fleece XL", "itemId": 8}, _PAT) is None
+
+def test_price_cap():
+    t = Target(brand="Test", aliases=["Test"], sizes=[], match_mode="brand_only", max_price=25.0)
+    assert match_item({"title": "Test Item", "currentPrice": 30.0, "itemId": 6}, t) is None
+    assert match_item({"title": "Test Item", "currentPrice": 20.0, "itemId": 7}, t) is not None
+
+
+# ── Username obfuscation matching ──
+
+def test_username_match_exact():
+    assert match_username("sampleuser7", "sampleuser7")
+
+def test_username_match_obfuscated_prefix_suffix():
+    # "samp****er7" → prefix "bran", suffix "on7"
+    assert match_username("sampleuser7", "samp****er7")
+
+def test_username_match_single_char_prefix():
+    # "s****7" → prefix "s", suffix "7"
+    assert match_username("sampleuser7", "s****7")
+
+def test_username_match_case_insensitive():
+    assert match_username("SampleUser7", "samp****er7")
+
+def test_username_no_match_wrong_prefix():
+    assert not match_username("sampleuser7", "zamp****er7")
+
+def test_username_no_match_wrong_suffix():
+    assert not match_username("sampleuser7", "samp****xyz")
+
+def test_username_no_match_no_asterisks():
+    assert not match_username("sampleuser7", "otherperson")
+
+def test_username_no_match_empty():
+    assert not match_username("", "b****n")
+    assert not match_username("sample", "")
+
+def test_username_no_match_short_username():
+    # Username too short to contain both prefix and suffix
+    assert not match_username("ab", "abc****xyz")
+
+
+# ── Decimal-adjacency regression (2026-08-06) ──
+#
+# A numeric size used to be guarded with (?<!\d)...(?!\d). A "." is not a
+# digit, so size "5" matched the tail of "Size 6.5" and size "9" matched the
+# head of "9.5Y". On the kids-shoe targets that produced 64 wrong matches out
+# of 77 in two days, most of which were auto-added to a real ShopGoodwill
+# watchlist. Titles below are taken verbatim from those bad matches.
+
+def test_size_5_does_not_match_other_half_sizes():
+    for title in ["Shoes Size 6.5", "Sneakers Size 4.5", "Shoes Size 2.5",
+                  "Shoes Size 3.5", "Nike Shoes Sz 7.5", "Running Shoes Size 12.5 M"]:
+        assert match_size(title, ["5"]) is None, title
+
+def test_size_9_does_not_match_half_or_child_sizes():
+    assert match_size("Sneakers Sz 9.5Y", ["9"]) is None
+    assert match_size("Basketball Shoes Size 19", ["9"]) is None
+
+def test_size_still_matches_its_own_decimal():
+    assert match_size("Blundstone Boots Size 11.5", ["11.5"]) == "11.5"
+    assert match_size("Vuori Trainer EU 44 Olive", ["44"]) == "44"
+
+def test_size_does_not_match_longer_number():
+    assert match_size("Shoes Size 15", ["5"]) is None
+    assert match_size("Waist 36.5 Pants", ["36"]) is None
+
+
+# ── Kids sizes require a youth marker ──
+
+_GIRLS_5 = Target(brand="Nike Girls Shoes", aliases=["Nike"],
+                  sizes=["5Y", "Youth 5", "Big Kid 5", "Little Kid 5"],
+                  exclude=["boys", "mens", "womens", "ladies", "lot", "bundle"])
+_BOYS_9 = Target(brand="Jordan Boys Shoes", aliases=["Jordan"],
+                 sizes=["9Y", "Youth 9", "Big Kid 9", "Little Kid 9"],
+                 exclude=["girls", "mens", "womens", "ladies", "lot", "bundle"])
+
+
+def test_girls_5_accepts_real_youth_five():
+    assert match_item(
+        {"title": "Nike Air Force 1 High Triple Black Girls Shoes Size 5Y"}, _GIRLS_5)
+
+
+def test_girls_5_rejects_real_world_false_positives():
+    for title in [
+        "Adidas Girls Continental 80 Red Lace-Up Low Top Sneaker Shoes Size 6.5",
+        "Nike Girls Air Force 1 'white Aquarius Blue Size 2.5 Shoes",
+        "Girls Multi Color Nike Shoes Sz 7.5",
+        "Girls' Kids' Jordan 12 Retro Floral (GS) White/Black+ Shoes Sneakers Size 5.5Y",
+    ]:
+        assert match_item({"title": title}, _GIRLS_5) is None, title
+
+
+def test_boys_9_rejects_model_numbers_and_child_widths():
+    # "Air Jordan 9" is a model name, and 9C is a toddler width, not youth 9.
+    for title in [
+        "Nike Boys Air Jordan 9 302359-103 White Blue Black Basketball Shoes Size 4Y",
+        "Nike Baby Boys Air Jordan Zion 1 DC2023-004 Blue Black Sneakers Shoes Size 9C",
+        "Nike Boys Air Jordan Flight Club 91 Black Purple Lace-Up Sneakers Shoes Sz 9.5Y",
+    ]:
+        assert match_item({"title": title}, _BOYS_9) is None, title
+
+
+def test_boys_9_accepts_real_youth_nine():
+    assert match_item({"title": "Jordan Boys Big Kid 9 Sneakers"}, _BOYS_9)
+
+
+# ── Toddler sizing (2026-08-06) ──
+#
+# The kids targets are for a 1-year-old and a 3-year-old, so they need US
+# toddler sizing ("5C", "9C"), not youth ("5Y", "9Y", ages ~10-13). An earlier
+# pass read "kids" as youth and filtered out 9C as if it were the wrong size.
+
+_TODDLER_5 = Target(brand="Nike Girls Shoes", aliases=["Nike"],
+                    sizes=["5C", "Toddler 5", "5 Toddler", "Baby 5", "Infant 5"],
+                    exclude=["boys", "mens", "womens", "ladies", "youth", "big kid", "5Y"])
+_TODDLER_9 = Target(brand="Jordan Boys Shoes", aliases=["Jordan"],
+                    sizes=["9C", "Toddler 9", "9 Toddler", "Baby 9", "Infant 9"],
+                    exclude=["girls", "mens", "womens", "ladies", "youth", "big kid", "9Y"])
+
+
+def test_toddler_9c_is_a_wanted_match():
+    assert match_item(
+        {"title": "Nike Baby Boys Air Jordan Zion 1 DC2023-004 Blue Black Sneakers Shoes Size 9C"},
+        _TODDLER_9)
+
+
+def test_toddler_targets_reject_youth_sizes():
+    assert match_item({"title": "Nike Girls Shoes Size 5Y"}, _TODDLER_5) is None
+    assert match_item({"title": "Jordan Boys Big Kid 9 Sneakers"}, _TODDLER_9) is None
+
+
+def test_toddler_size_does_not_match_across_decimal():
+    assert match_item({"title": "Nike Girls Sneakers Size 6.5C"}, _TODDLER_5) is None
+    assert match_item({"title": "Nike Girls Sneakers Size 15C"}, _TODDLER_5) is None
+
+
+# ── Title normalisation for relist dedup ──
+
+def test_norm_title_collapses_case_and_whitespace():
+    assert norm_title("  Nike   Girls  Shoes ") == "nike girls shoes"
+    assert norm_title("VUORI Leggings") == norm_title("vuori   leggings")
+
+
+def test_norm_title_distinguishes_genuinely_different_titles():
+    assert norm_title("Patagonia XL Fleece") != norm_title("Patagonia XL Shorts")
+
+
+# ── Precision fixes found by auditing a live run (2026-08-07) ──
+#
+# The first production run on the hardened code delivered a digest containing
+# 2XL shirts, a Mathey-Tissot watch, a mens jacket in a womens digest, and
+# several multi-item lots. All four are older bugs the earlier replay could
+# not surface, because that replay only proved behaviour was *unchanged*.
+
+def test_xl_does_not_match_2xl_or_3xl():
+    for t in ["Patagonia Shirt Size 2XL", "Kuhl Shirt size 3XL", "Fleece XXL"]:
+        assert match_size(t, ["XL"]) is None, t
+
+
+def test_xl_still_matches_its_own_forms():
+    assert match_size("Patagonia Fleece Size XL", ["XL"])
+    assert match_size("Patagonia Fleece X-Large", ["XL"])
+    assert match_size("Patagonia Fleece 1XL", ["XL"])   # 1XL is an XL alias
+
+
+def test_alias_does_not_match_a_hyphenated_compound_brand():
+    # \b alone would not catch this: a hyphen is a word boundary.
+    assert match_brand("Authentic Mathey-Tissot Watch", ["Tissot"]) is None
+    assert match_brand("Mathey Tissot", ["Mathey-Tissot"]) is None
+
+
+def test_alias_still_matches_normally():
+    assert match_brand("Vintage 14k Gold TISSOT 534657 Pocket Watch", ["Tissot"]) == "Tissot"
+    assert match_brand("KUHL Wildfibre Mens XL", ["KUHL"]) == "KUHL"
+    assert match_brand("New Balance Girls Shoes", ["New Balance"]) == "New Balance"
+
+
+def test_womens_target_excludes_bare_men():
+    t = Target(brand="Vuori", aliases=["Vuori"], sizes=["M"], gender="womens")
+    assert match_item({"title": "vuori sunday element track jacket men size M"}, t) is None
+    assert match_item({"title": "Vuori Medium Tan Pants Men"}, t) is None
+
+
+def test_womens_target_still_matches_women():
+    t = Target(brand="Vuori", aliases=["Vuori"], sizes=["M"], gender="womens")
+    assert match_item({"title": "Vuori Women's Miles Ankle Pant Size M"}, t)
+
+
+def test_lots_are_excluded_everywhere():
+    t = Target(brand="KUHL", aliases=["KUHL"], sizes=["XL"], gender="mens")
+    for title in ["KUHL (Lot of 3) Men's XL Shirts",
+                  "Kuhl Men's XL 4 Item Lot| Vest| Shirt",
+                  "7pc Kuhl Men's XL Lot"]:
+        assert match_item({"title": title}, t) is None, title
+
+
+def test_lot_exclusion_does_not_trip_on_words_containing_lot():
+    t = Target(brand="Patagonia", aliases=["Patagonia"], sizes=["XL"], gender="mens")
+    assert match_item({"title": "Patagonia Slot Canyon Shirt XL"}, t)
+    assert match_item({"title": "Patagonia Pilot Jacket XL"}, t)

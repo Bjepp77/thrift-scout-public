@@ -1,0 +1,33 @@
+# Copy to config.yaml (gitignored) and fill in your own profiles.
+profiles:
+  - name: Alex
+    email: alex@example.com
+    targets:
+      - brand: "Patagonia"
+        aliases: ["Patagonia"]
+        sizes: ["L", "Large"]
+        gender: "mens"
+        exclude: ["kids", "youth", "damaged", "stained"]
+
+      - brand: "Blundstone"
+        aliases: ["Blundstone", "Blundstones"]
+        sizes: ["10", "US 10"]
+        gender: "mens"
+        exclude: ["kids", "youth"]
+
+  - name: Sam
+    email: sam@example.com
+    targets:
+      - brand: "Lululemon"
+        aliases: ["Lululemon", "Lulu"]
+        sizes: ["6", "S", "Small"]
+        gender: "womens"
+        exclude: ["mens", "kids"]
+
+settings:
+  request_delay_min: 2.0
+  request_delay_max: 5.0
+  max_items_per_email: 50
+  send_empty_email: true
+  page_size: 40
+  max_pages: 5

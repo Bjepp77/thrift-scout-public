@@ -1,0 +1,13 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+thrift_scout_data.db
+*.egg-info/
+dist/
+build/
+.venv/
+.DS_Store
+config.yaml
+*.html
+!thrift_scout/templates/*
