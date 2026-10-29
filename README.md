@@ -1,4 +1,4 @@
-# Thrift Scout
+# Goodwill Scout (thrift-scout)
 
 Automated ShopGoodwill.com monitor. Searches for specific brands and sizes, dedupes against past results, and emails a daily HTML digest.
 
