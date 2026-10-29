@@ -11,3 +11,4 @@ build/
 config.yaml
 *.html
 !thrift_scout/templates/*
+.pytest_cache/
