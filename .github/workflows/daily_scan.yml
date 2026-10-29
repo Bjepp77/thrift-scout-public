@@ -1,8 +1,10 @@
 name: Daily Thrift Scout Scan
 
+# This public copy ships without a config.yaml, so the daily schedule is off.
+# To run it on a schedule, add your own config.yaml and uncomment the two lines.
 on:
-  schedule:
-    - cron: "0 14 * * *"   # 7:00 AM Mountain Time (UTC-7)
+  # schedule:
+  #   - cron: "0 14 * * *"   # 7:00 AM Mountain Time (UTC-7)
   workflow_dispatch:        # manual trigger from Actions tab
 
 # A manual run started while the cron run is still going would scan, email and
@@ -27,6 +29,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+
+      - name: Check for config.yaml
+        run: |
+          if [ ! -f config.yaml ]; then
+            echo "::error::No config.yaml. Copy config.example.yaml to config.yaml, add your targets, and commit it."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: pip install -r requirements.txt
